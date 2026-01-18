@@ -354,44 +354,6 @@ rosrun tf view_frames && evince frames.pdf
 
 ---
 
-## 🐛 Troubleshooting
-
-### Common Issues
-
-| Problem | Possible Cause | Solution |
-|---------|---------------|----------|
-| Robot doesn't move | Emergency stop active | Publish `false` to `/emergency_stop` |
-| Cube not detected | HSV range mismatch | Tune `BLUE_LOW`/`BLUE_HIGH` values |
-| Arm planning fails | Collision detected | Check MoveIt planning scene |
-| Mission stuck | Timeout too short | Increase timeout parameters |
-| Robot overshoots | Stop distance wrong | Adjust `CUBE_STOP_LIDAR` |
-
-### Log Analysis
-
-```bash
-# View all ROS logs
-roscd log && tail -f latest/*.log
-
-# Filter for errors only
-rostopic echo /rosout | grep -i error
-
-# Check specific node output
-rosnode info /mission_controller
-```
-
----
-
-## 📊 Performance Metrics
-
-| Metric | Typical Value | Notes |
-|--------|--------------|-------|
-| Mission completion time | ~90-120s | Varies with initial position |
-| Pick success rate | >95% | With retry logic |
-| Place success rate | >90% | Depends on alignment |
-| Detection latency | <100ms | Real-time vision |
-
----
-
 ## 🔬 Technical Implementation Details
 
 ### Sensor Fusion Strategy
@@ -422,23 +384,13 @@ rosnode info /mission_controller
 
 ## 📄 License
 
-This project is developed for educational purposes as part of the **AER657 Cognitive Robotics** course at Toronto Metropolitan University.
+This project is developed for educational purposes as part of the **AER657 Cognitive Robotics** course at Cairo University.
 
 ---
 
 ## 👨‍💻 Authors
 
 - **Karim** - Project development and implementation
-
----
-
-## 🙏 Acknowledgments
-
-- [AgileX Robotics](https://www.agilex.ai/) - LIMO robot platform
-- [Elephant Robotics](https://www.elephantrobotics.com/) - MyCobot 280 arm
-- [ROS Community](https://www.ros.org/) - Open-source robotics framework
-- [MoveIt](https://moveit.ros.org/) - Motion planning framework
-- [Gazebo](http://gazebosim.org/) - Robot simulation
 
 ---
 
