@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Gazebo + Robot -->
+  <include file="$(find limo_project)/launch/demo_gazebo.launch"/>
+  
+  <!-- Navigation -->
+  <node name="wait_gazebo" pkg="rosservice" type="rosservice" 
+        args="call --wait /gazebo/unpause_physics" output="screen"/>
+  <include file="$(find limo_project)/launch/playpen_nav.launch"/>
+  
+  <!-- Blue Cube Detector (color-based) -->
+  <node name="blue_cube_detector" pkg="limo_vision" type="blue_cube_detector.py" 
+        output="screen" launch-prefix="bash -c 'sleep 8; $0 $@'"/>
+  
+  <!-- Target Navigator -->
+  <node name="goto_target_pose" pkg="limo_vision" type="goto_target_pose.py" 
+        output="screen" launch-prefix="bash -c 'sleep 10; $0 $@'"/>
+</launch>

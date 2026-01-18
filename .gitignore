@@ -1,0 +1,34 @@
+# Build directories
+build/
+devel/
+install/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ROS
+*.bag
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak

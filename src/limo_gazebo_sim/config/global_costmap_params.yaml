@@ -1,0 +1,54 @@
+# ============================================
+# Global Costmap Parameters
+# ============================================
+# The GLOBAL costmap is used for long-range path planning.
+# It covers the entire map and is updated less frequently.
+# Think of it as "the big picture" - where am I going?
+# ============================================
+
+global_costmap:
+  global_frame: map           # Reference frame (the map)
+  robot_base_frame: base_footprint
+  
+  # Use the static map from map_server
+  static_map: true
+  
+  # Update rate (slower is fine for global planning)
+  update_frequency: 2.0       # Update 2 times per second
+  publish_frequency: 1.0      # Publish costmap 1 time per second
+  
+  # Transform tolerance - INCREASED to handle simulation timing
+  transform_tolerance: 1.0
+  
+  # Plugins (layers that make up the costmap)
+  plugins:
+    - {name: static_layer, type: "costmap_2d::StaticLayer"}
+    - {name: obstacle_layer, type: "costmap_2d::ObstacleLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+  
+  # Static layer - the saved map
+  static_layer:
+    enabled: true
+    map_topic: /map
+    subscribe_to_updates: true
+    track_unknown_space: true   # Consider unknown space as obstacle
+  
+  # Obstacle layer - dynamic obstacles from LiDAR
+  obstacle_layer:
+    enabled: true
+    observation_sources: scan
+    scan:
+      sensor_frame: laser_link
+      data_type: LaserScan
+      topic: /limo/scan
+      marking: true
+      clearing: true
+      obstacle_range: 5.0       # Detect obstacles within 5m
+      raytrace_range: 6.0       # Clear obstacles within 6m
+  
+  # Inflation layer - buffer zone around obstacles  
+  # TUNED: Reduced to match common params
+  inflation_layer:
+    enabled: true
+    inflation_radius: 0.25      # Matches costmap_common_params
+    cost_scaling_factor: 3.0

@@ -1,0 +1,53 @@
+# ============================================
+# Local Costmap Parameters
+# ============================================
+# The LOCAL costmap is used for immediate obstacle avoidance.
+# It's a small "window" around the robot, updated very frequently.
+# Think of it as "what's right in front of me?"
+# ============================================
+
+local_costmap:
+  global_frame: map            # Changed from odom to map to fix TF errors
+  robot_base_frame: base_footprint
+  
+  # Don't use static map - build from sensors only
+  static_map: false
+  rolling_window: true        # Window moves with robot
+  
+  # Size of the local costmap window (4m x 4m around robot)
+  width: 4.0
+  height: 4.0
+  resolution: 0.05            # 5cm per cell
+  
+  # Update rate (fast for reactive obstacle avoidance)
+  update_frequency: 5.0       # Update 5 times per second
+  publish_frequency: 3.0      # Publish 3 times per second
+  
+  # Transform tolerance - INCREASED to handle simulation timing
+  transform_tolerance: 1.0
+  
+  # Plugins (layers)
+  plugins:
+    - {name: obstacle_layer, type: "costmap_2d::ObstacleLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+  
+  # Obstacle layer - real-time obstacles from LiDAR
+  obstacle_layer:
+    enabled: true
+    observation_sources: scan
+    scan:
+      sensor_frame: laser_link
+      data_type: LaserScan
+      topic: /limo/scan
+      marking: true           # Add obstacles when seen
+      clearing: true          # Remove obstacles when not seen
+      min_obstacle_height: 0.0
+      max_obstacle_height: 2.0
+      obstacle_range: 3.0     # Detect obstacles within 3m
+      raytrace_range: 4.0     # Clear obstacles within 4m
+    combination_method: 1     # 1 = Max (take highest cost from all sources)
+  
+  # Inflation layer
+  inflation_layer:
+    inflation_radius: 0.30    # Slightly smaller than global
+    cost_scaling_factor: 5.0

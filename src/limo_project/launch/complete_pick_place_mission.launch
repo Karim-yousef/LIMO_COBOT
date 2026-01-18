@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- ============================================
+       COMPLETE PICK AND PLACE MISSION
+       
+       ARCHITECTURE: Event-Driven with Mission Controller
+       
+       All nodes start IMMEDIATELY in IDLE state.
+       Mission Controller triggers each phase sequentially.
+       Proper event-driven coordination with status feedback.
+       
+       Usage:
+         Simulation:  roslaunch limo_project complete_pick_place_mission.launch sim:=true
+         Real Robot:  roslaunch limo_project complete_pick_place_mission.launch sim:=false
+       ============================================ -->
+
+  <!-- Arguments -->
+  <arg name="sim" default="true" doc="true for simulation, false for real robot"/>
+  <arg name="gazebo_gui" default="true" doc="Show Gazebo GUI (simulation only)"/>
+  <arg name="enable_display" default="true" doc="Enable cv2 visualization windows"/>
+  
+  <!-- Use simulation time ONLY if sim:=true -->
+  <param name="/use_sim_time" value="$(arg sim)"/>
+  
+  <!-- Gazebo URI (simulation only) -->
+  <env name="GAZEBO_MASTER_URI" value="http://localhost:11345" if="$(arg sim)"/>
+  
+  <!-- ============================================ -->
+  <!-- INFRASTRUCTURE LAYER -->
+  <!-- ============================================ -->
+  
+  <!-- GAZEBO SIMULATION (only if sim:=true) -->
+  <include file="$(find limo_project)/launch/gazebo.launch" if="$(arg sim)">
+    <arg name="gazebo_gui" value="$(arg gazebo_gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="world_name" value="$(find limo_project)/worlds/clearpath_playpen_Pick.world"/>
+  </include>
+
+  <!-- SENSOR FUSION (EKF) -->
+  <!-- Note: Mission controller waits for sensors to be ready before starting -->
+  <node pkg="robot_pose_ekf" name="robot_pose_ekf" type="robot_pose_ekf" output="screen">
+    <param name="output_frame" value="odom"/>
+    <param name="base_footprint_frame" value="base_footprint"/>
+    <param name="freq" value="30.0"/>
+    <param name="sensor_timeout" value="1.0"/>
+    <param name="odom_used" value="true"/>
+    <param name="imu_used" value="true"/>
+    <param name="vo_used" value="false"/>
+    <remap from="odom" to="/limo/odom"/>
+    <remap from="imu_data" to="/limo/imu"/>
+  </node>
+
+  <!-- MOVEIT FOR ARM CONTROL -->
+  <include file="$(find limo_cobot_moveit)/launch/move_group.launch">
+    <arg name="allow_trajectory_execution" value="true"/>
+    <arg name="moveit_controller_manager" value="ros_control"/>
+    <arg name="load_robot_description" value="false"/>
+  </include>
+
+  <!-- ============================================ -->
+  <!-- VISION AND CONTROL NODES -->
+  <!-- All start in IDLE, wait for mission controller triggers -->
+  <!-- ============================================ -->
+  
+  <!-- BLUE CUBE DETECTION AND APPROACH -->
+  <node pkg="limo_vision" type="blue_cube_approach_pick_enhanced.py" name="blue_cube_approach"
+        output="screen">
+    <param name="enable_display" value="$(arg enable_display)"/>
+  </node>
+  
+  <!-- RED BASKET DETECTION AND APPROACH -->
+  <node pkg="limo_vision" type="red_basket_approach.py" name="red_basket_approach" 
+        output="screen"/>
+
+  <!-- ARM PICK AND PLACE CONTROLLER -->
+  <node pkg="limo_vision" type="final_arm_pick.py" name="final_arm_pick" 
+        output="screen"/>
+
+  <!-- ============================================ -->
+  <!-- MISSION CONTROLLER (Event-Driven Coordinator) -->
+  <!-- Waits for system ready, then triggers phases -->
+  <!-- ============================================ -->
+  <node pkg="limo_vision" type="mission_controller.py" name="mission_controller" 
+        output="screen"/>
+
+</launch>

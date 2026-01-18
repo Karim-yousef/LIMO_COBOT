@@ -1,0 +1,6 @@
+# Request: whether to start (true) or stop (false) the mission phase
+bool start
+---
+# Response: whether the command was accepted
+bool success
+string message

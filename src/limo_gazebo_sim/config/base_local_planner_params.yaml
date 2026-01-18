@@ -1,0 +1,69 @@
+# ============================================
+# DWA Local Planner Parameters
+# ============================================
+# DWA = Dynamic Window Approach
+# 
+# This planner:
+# 1. Simulates many possible trajectories (arcs the robot could drive)
+# 2. Scores each trajectory based on: goal distance, obstacle clearance, speed
+# 3. Picks the best trajectory
+# 4. Sends velocity command for first step
+# 5. Repeats at 10Hz
+# ============================================
+
+DWAPlannerROS:
+  # ====== Robot velocity limits ======
+  # Maximum speeds the robot can achieve
+  # TUNED: Reduced for smoother motion (less jerky)
+  max_vel_x: 0.4              # Max forward speed: 0.4 m/s (was 0.5)
+  min_vel_x: -0.15            # Max reverse speed: 0.15 m/s (slower for safety)
+  
+  max_vel_y: 0.0              # No sideways motion (differential drive)
+  min_vel_y: 0.0
+  
+  max_vel_theta: 1.2          # Max rotation: 1.2 rad/s (~69 deg/s) - INCREASED for faster turns
+  min_vel_theta: 0.2          # Min rotation: 0.2 rad/s (~11 deg/s) - INCREASED from 0.05
+  
+  max_vel_trans: 0.4          # Max translational velocity (was 0.5)
+  min_vel_trans: 0.05         # Min translational velocity - lowered to allow fine adjustments
+  
+  # ====== Acceleration limits ======
+  # How quickly robot can speed up/slow down
+  # TUNED: Lower accelerations = smoother motion (less jerky)
+  acc_lim_x: 0.5              # Forward acceleration: 0.5 m/s² (was 1.0 - HALVED!)
+  acc_lim_y: 0.0              # No sideways acceleration
+  acc_lim_theta: 1.5          # Rotational acceleration: 1.5 rad/s² - INCREASED for faster turning
+  
+  # ====== Goal tolerance ======
+  # How close is "close enough" to the goal
+  xy_goal_tolerance: 0.15     # Within 15cm of goal position
+  yaw_goal_tolerance: 0.1     # Within ~6 degrees of goal orientation
+  latch_xy_goal_tolerance: false
+  
+  # ====== Forward simulation ======
+  # How far ahead to simulate trajectories
+  sim_time: 1.7               # Simulate 1.7 seconds ahead (reduced for faster reaction)
+  sim_granularity: 0.025      # Check every 2.5cm along trajectory
+  vx_samples: 12              # Try 12 different forward speeds
+  vy_samples: 1               # Only 1 sideways (always 0)
+  vtheta_samples: 24          # Try 24 different rotation speeds
+  angular_sim_granularity: 0.025  # Finer angular checking
+  
+  # ====== Trajectory scoring weights ======
+  # Higher weight = more important
+  # CRITICAL FIX: Increased occdist_scale to STRONGLY avoid obstacles!
+  path_distance_bias: 32.0    # Stay close to global path
+  goal_distance_bias: 20.0    # Head toward goal (reduced slightly)
+  occdist_scale: 0.5          # AVOID OBSTACLES! (was 0.01 - way too low!)
+  forward_point_distance: 0.325  # Look-ahead point for scoring
+  stop_time_buffer: 0.2       # Time to stop before collision
+  scaling_speed: 0.25         # Speed at which to start scaling footprint
+  max_scaling_factor: 0.2     # Max amount to scale footprint
+  
+  # ====== Oscillation prevention ======
+  # Prevent robot from wiggling back and forth
+  oscillation_reset_dist: 0.1   # Move 10cm to reset oscillation flag (was 0.05)
+  
+  # ====== Misc ======
+  publish_traj_pc: true       # Publish trajectory for visualization
+  publish_cost_grid_pc: true  # Publish cost grid for debugging

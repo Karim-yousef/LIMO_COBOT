@@ -1,0 +1,43 @@
+# ============================================
+# Common Costmap Parameters
+# ============================================
+# These settings are shared by both global and local costmaps
+#
+# A "costmap" is a grid where each cell has a "cost" value:
+# - 0 = free space (safe to drive)
+# - 1-252 = increasing danger (close to obstacles)
+# - 253 = inscribed (robot would touch obstacle)
+# - 254 = lethal (obstacle is here)
+# - 255 = unknown
+# ============================================
+
+# Robot footprint (shape of robot base for collision checking)
+# LIMO is roughly 42cm x 32cm rectangular
+footprint: [[-0.21, -0.16], [-0.21, 0.16], [0.21, 0.16], [0.21, -0.16]]
+
+# Or use circular footprint (simpler, slightly less accurate)
+# robot_radius: 0.25
+
+# Obstacle detection settings
+obstacle_range: 5.0       # Detect obstacles within 5 meters
+raytrace_range: 6.0       # Clear free space within 6 meters
+
+# Inflation layer - adds "buffer zone" around obstacles
+# TUNED: Reduced from 0.35 to 0.25 to allow rotation in tight spaces
+inflation_radius: 0.25    # Stay 25cm away from obstacles (was 0.35)
+cost_scaling_factor: 3.0  # How quickly cost decreases (lower = gentler gradient)
+
+# Map resolution
+resolution: 0.05          # 5cm per cell (matches your map)
+
+# Sensor configuration - tell costmap about our LiDAR
+observation_sources: scan
+
+scan:
+  sensor_frame: laser_link
+  data_type: LaserScan
+  topic: /limo/scan
+  marking: true           # Add obstacles to costmap
+  clearing: true          # Remove obstacles when not seen
+  min_obstacle_height: 0.0
+  max_obstacle_height: 2.0

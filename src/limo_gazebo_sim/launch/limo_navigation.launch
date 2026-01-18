@@ -1,0 +1,150 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 
+    ============================================
+    LIMO COBOT Navigation Launch File
+    ============================================
+    
+    This file runs:
+    1. map_server - Loads your saved map
+    2. AMCL - Localization (figures out where robot is)
+    3. move_base - Path planning and obstacle avoidance
+    
+    Prerequisites:
+    - Robot simulation must be running (demo_gazebo.launch)
+    - You must have a saved map in ~/maps/
+    
+    Usage:
+    Terminal 1: roslaunch limo_cobot_moveit demo_gazebo.launch world_name:=...
+    Terminal 2: roslaunch limo_gazebo_sim limo_navigation.launch
+    
+    Then in RViz:
+    - Set initial pose with "2D Pose Estimate" button
+    - Send goals with "2D Nav Goal" button
+    -->
+
+    <!-- ============================================ -->
+    <!-- ARGUMENTS (can be changed from command line) -->
+    <!-- ============================================ -->
+    
+    <!-- Path to your saved map -->
+    <arg name="map_file" default="$(env HOME)/maps/test_office_map.yaml"/>
+    
+    <!-- ============================================ -->
+    <!-- MAP SERVER -->
+    <!-- ============================================ -->
+    <!-- Loads the saved map and publishes it to /map topic -->
+    
+    <node name="map_server" pkg="map_server" type="map_server" args="$(arg map_file)">
+        <param name="frame_id" value="map"/>
+    </node>
+
+    <!-- ============================================ -->
+    <!-- AMCL - Adaptive Monte Carlo Localization -->
+    <!-- ============================================ -->
+    <!-- 
+    AMCL uses particle filter to estimate robot's position on the map.
+    It compares LiDAR scans to the map to figure out where the robot is.
+    -->
+    
+    <node pkg="amcl" type="amcl" name="amcl" output="screen">
+        <!-- Which LiDAR topic to use -->
+        <remap from="scan" to="/limo/scan"/>
+        
+        <!-- TF Frames -->
+        <param name="odom_frame_id" value="odom"/>
+        <param name="base_frame_id" value="base_footprint"/>
+        <param name="global_frame_id" value="map"/>
+        
+        <!-- ====== Particle Filter Settings ====== -->
+        <!-- More particles = more accurate but slower -->
+        <param name="min_particles" value="100"/>
+        <param name="max_particles" value="5000"/>
+        
+        <!-- How different particles can be before resampling -->
+        <param name="kld_err" value="0.05"/>
+        <param name="kld_z" value="0.99"/>
+        
+        <!-- ====== Motion Model (how robot moves) ====== -->
+        <!-- These values represent expected odometry error -->
+        <param name="odom_model_type" value="diff"/>  <!-- Differential drive -->
+        <param name="odom_alpha1" value="0.2"/>  <!-- Rotation error from rotation -->
+        <param name="odom_alpha2" value="0.2"/>  <!-- Rotation error from translation -->
+        <param name="odom_alpha3" value="0.2"/>  <!-- Translation error from translation -->
+        <param name="odom_alpha4" value="0.2"/>  <!-- Translation error from rotation -->
+        
+        <!-- ====== Laser/LiDAR Model ====== -->
+        <param name="laser_model_type" value="likelihood_field"/>
+        <param name="laser_likelihood_max_dist" value="2.0"/>
+        <param name="laser_max_range" value="12.0"/>
+        <param name="laser_max_beams" value="60"/>  <!-- Use 60 of 720 beams for speed -->
+        
+        <!-- ====== Update Settings ====== -->
+        <!-- How much robot must move before updating localization -->
+        <param name="update_min_d" value="0.1"/>  <!-- 10cm linear -->
+        <param name="update_min_a" value="0.2"/>  <!-- ~11 degrees angular -->
+        
+        <!-- ====== Initial Pose (where robot starts) ====== -->
+        <!-- These can be overridden by setting initial pose in RViz -->
+        <param name="initial_pose_x" value="0.0"/>
+        <param name="initial_pose_y" value="0.0"/>
+        <param name="initial_pose_a" value="0.0"/>  <!-- Yaw angle in radians -->
+        
+        <!-- How uncertain we are about initial pose -->
+        <param name="initial_cov_xx" value="0.25"/>  <!-- 0.5m uncertainty -->
+        <param name="initial_cov_yy" value="0.25"/>
+        <param name="initial_cov_aa" value="0.07"/>  <!-- ~15 degrees uncertainty -->
+        
+        <!-- ====== Recovery ====== -->
+        <!-- If localization is bad, randomly spread particles -->
+        <param name="recovery_alpha_slow" value="0.001"/>
+        <param name="recovery_alpha_fast" value="0.1"/>
+    </node>
+
+    <!-- ============================================ -->
+    <!-- MOVE_BASE - Path Planning & Execution -->
+    <!-- ============================================ -->
+    <!-- 
+    move_base handles:
+    - Global path planning (A* algorithm to find path)
+    - Local path planning (DWA to avoid obstacles)
+    - Sending velocity commands to the robot
+    -->
+    
+    <node pkg="move_base" type="move_base" name="move_base" output="screen">
+        <remap from="cmd_vel" to="/cmd_vel"/>
+        
+        <!-- Load configuration files -->
+        <rosparam file="$(find limo_gazebo_sim)/config/costmap_common_params.yaml" command="load" ns="global_costmap"/>
+        <rosparam file="$(find limo_gazebo_sim)/config/costmap_common_params.yaml" command="load" ns="local_costmap"/>
+        <rosparam file="$(find limo_gazebo_sim)/config/local_costmap_params.yaml" command="load"/>
+        <rosparam file="$(find limo_gazebo_sim)/config/global_costmap_params.yaml" command="load"/>
+        <rosparam file="$(find limo_gazebo_sim)/config/base_local_planner_params.yaml" command="load"/>
+        
+        <!-- Planner settings -->
+        <param name="base_global_planner" value="navfn/NavfnROS"/>
+        <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS"/>
+        
+        <!-- How often to replan - INCREASED for better reactivity -->
+        <param name="planner_frequency" value="2.0"/>       <!-- Replan global path 2x/sec -->
+        <param name="controller_frequency" value="15.0"/>   <!-- Local planner 15x/sec (was 10) -->
+        <param name="planner_patience" value="5.0"/>
+        <param name="controller_patience" value="10.0"/>    <!-- Reduced from 15 -->
+        
+        <!-- CRITICAL: What to do when planner fails -->
+        <param name="max_planning_retries" value="3"/>
+        <param name="conservative_reset_dist" value="0.5"/> <!-- Clear obstacles 0.5m away -->
+        
+        <!-- Recovery behaviors when stuck -->
+        <param name="clearing_rotation_allowed" value="true"/>
+    </node>
+
+    <!-- ============================================ -->
+    <!-- RVIZ - Visualization -->
+    <!-- ============================================ -->
+    
+    <node name="rviz_nav" pkg="rviz" type="rviz" 
+          args="-d $(find limo_gazebo_sim)/rviz/navigation.rviz"
+          output="screen"/>
+
+</launch>
