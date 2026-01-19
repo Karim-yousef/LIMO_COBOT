@@ -92,7 +92,16 @@ class RedBasketApproach:
         self.basket_cy = 0
         self.basket_area = 0
         self.consecutive_detections = 0
-        self.CONFIRM_DETECTIONS = 3  # Need 5 consecutive detections to confirm basket
+        self.CONFIRM_DETECTIONS = 3  # Need 3 consecutive detections to confirm basket
+        self.last_basket_direction = 0  # -1=right, +1=left, tracks where basket was last seen
+        
+        # LAST KNOWN POSITION - saved when basket is detected, used when lost
+        self.last_known_cx = None  # Last known X position in image
+        self.last_known_cy = None  # Last known Y position in image
+        self.last_known_area = None  # Last known area (for distance estimate)
+        self.last_known_time = None  # When we last saw it
+        self.POSITION_MEMORY_TIMEOUT = 5.0  # Forget position after 5 seconds
+        self.basket_ever_confirmed = False  # True once we've confirmed basket at least once
         
         # LIDAR data
         self.front_dist = 10.0
@@ -356,6 +365,19 @@ class RedBasketApproach:
                 self.basket_cx = int(M["m10"] / M["m00"])
                 self.basket_cy = int(M["m01"] / M["m00"])
             
+            # =====================================================
+            # SAVE LAST KNOWN POSITION - used when basket is lost
+            # =====================================================
+            self.last_known_cx = self.basket_cx
+            self.last_known_cy = self.basket_cy
+            self.last_known_area = self.basket_area
+            self.last_known_time = rospy.Time.now()
+            
+            # Track direction for when we lose it
+            error = (self.basket_cx - self.image_center_x) / float(self.image_center_x)
+            if abs(error) > 0.1:
+                self.last_basket_direction = -1 if error > 0 else 1
+            
             # ONLY count consecutive detections during SEARCH or later states!
             # Don't count during BACKUP (we're still facing the table/cones)
             if self.state in [self.SEARCH, self.APPROACH, self.FINAL_APPROACH]:
@@ -563,18 +585,22 @@ class RedBasketApproach:
         
         return twist
 
+    def _has_valid_last_position(self):
+        """Check if we have a recent valid last known position."""
+        if self.last_known_time is None:
+            return False
+        age = (rospy.Time.now() - self.last_known_time).to_sec()
+        return age < self.POSITION_MEMORY_TIMEOUT
+
     def _approach_state(self):
-        """APPROACH state: Navigate toward basket."""
-        twist = Twist()
+        """APPROACH state: Navigate toward basket using last known position when lost.
         
-        # Check for confirmed detection
-        if not self.basket_detected:
-            # Lost basket briefly - slow down and look
-            if self.consecutive_detections == 0:
-                rospy.logwarn_throttle(1, "Lost basket, slowing down to search...")
-                twist.linear.x = 0.05
-                twist.angular.z = 0.2 * self.search_direction
-                return twist
+        Strategy:
+        1. If basket visible: align and move toward it, save position
+        2. If basket lost but have recent position: move slowly toward last known location
+        3. If basket lost for too long: go back to SEARCH
+        """
+        twist = Twist()
         
         # Check if close enough for final approach
         if self.front_dist < self.FINAL_APPROACH_DIST:
@@ -582,41 +608,83 @@ class RedBasketApproach:
             self.state = self.FINAL_APPROACH
             return twist
         
-        # Obstacle avoidance
+        # Obstacle avoidance - always check
         if self.front_dist < self.OBSTACLE_DIST:
             rospy.logwarn(f"Obstacle at {self.front_dist:.2f}m during approach!")
-            # Try to go around
             if self.left_dist > self.right_dist:
                 twist.angular.z = 0.4
             else:
                 twist.angular.z = -0.4
             twist.linear.x = 0.05
             return twist
-            
-        # Calculate steering based on basket position
-        error = (self.basket_cx - self.image_center_x) / float(self.image_center_x)  # -1 to 1
         
-        # If very misaligned, prioritize rotation over forward movement
-        if abs(error) > 0.25:
-            # Mostly rotate, minimal forward
-            twist.linear.x = 0.05
-            twist.angular.z = -error * 0.6  # Stronger rotation
-            rospy.loginfo_throttle(1, f"APPROACH: ALIGNING - error={error:.2f}")
+        # =====================================================
+        # MAIN APPROACH LOGIC
+        # =====================================================
+        
+        if self.basket_detected:
+            # BASKET VISIBLE - align and approach
+            self.basket_ever_confirmed = True
+            error = (self.basket_cx - self.image_center_x) / float(self.image_center_x)
+            
+            # If very misaligned, STOP and rotate to align first
+            if abs(error) > 0.3:
+                twist.linear.x = 0.0  # STOP forward motion
+                twist.angular.z = -error * 0.5  # Rotate to center
+                rospy.loginfo_throttle(0.5, f"APPROACH: ALIGNING - error={error:.2f}")
+            elif abs(error) > 0.15:
+                # Moderate misalignment - slow forward + rotate
+                twist.linear.x = 0.08
+                twist.angular.z = -error * 0.5
+                rospy.loginfo_throttle(0.5, f"APPROACH: CORRECTING - error={error:.2f}")
+            else:
+                # Well aligned - move forward with minor steering
+                twist.linear.x = self.LINEAR_SPEED
+                twist.angular.z = -error * self.ANGULAR_SPEED
+                
+            # Slow down as we get closer
+            if self.front_dist < 1.0:
+                twist.linear.x *= 0.6
+                
+            rospy.loginfo_throttle(1, f"APPROACH: TRACKING - dist={self.front_dist:.2f}m, error={error:.2f}, area={self.basket_area}")
+            
+        elif self._has_valid_last_position():
+            # BASKET LOST but we have recent position - move toward last known location
+            age = (rospy.Time.now() - self.last_known_time).to_sec()
+            
+            # Calculate error from LAST KNOWN position
+            error = (self.last_known_cx - self.image_center_x) / float(self.image_center_x)
+            
+            rospy.loginfo_throttle(0.5, f"APPROACH: LOST - using last position (cx={self.last_known_cx}, age={age:.1f}s)")
+            
+            # Move SLOWLY toward last known position
+            # If last position was centered, go straight
+            # If it was off to a side, turn that way while moving slowly
+            if abs(error) > 0.2:
+                # Last position was off-center - rotate toward it
+                twist.linear.x = 0.05  # Very slow forward
+                twist.angular.z = -error * 0.4  # Turn toward last known position
+            else:
+                # Last position was roughly centered - go straight slowly
+                twist.linear.x = 0.08
+                twist.angular.z = self.last_basket_direction * 0.1  # Slight drift in last direction
+                
         else:
-            # Move forward and steer toward basket
-            twist.linear.x = self.LINEAR_SPEED
-            twist.angular.z = -error * self.ANGULAR_SPEED
-        
-        # Slow down as we get closer
-        if self.front_dist < 1.0:
-            twist.linear.x *= 0.5
-            
-        rospy.loginfo_throttle(1, f"APPROACH: dist={self.front_dist:.2f}m, error={error:.2f}, area={self.basket_area}")
+            # BASKET LOST and no valid last position - go back to search
+            rospy.logwarn("Lost basket with no recent position, returning to SEARCH")
+            self.state = self.SEARCH
+            self.search_start_time = rospy.Time.now()
+            self.search_phase = "ROTATE"
+            self.phase_start_time = rospy.Time.now()
+            return twist
         
         return twist
         
     def _final_approach_state(self):
-        """FINAL_APPROACH state: Careful approach for placement."""
+        """FINAL_APPROACH state: Careful approach for placement using last known position.
+        
+        At this point we're close - use LIDAR for distance and last position for alignment.
+        """
         twist = Twist()
         
         # Stop if close enough
@@ -639,27 +707,47 @@ class RedBasketApproach:
             self.state = self.DONE
             self.arm_place_pub.publish(Bool(True))
             return twist
-            
-        if not self.basket_detected:
-            # In final approach, continue slowly even without detection
-            rospy.loginfo_throttle(1, "FINAL: Lost visual, creeping forward...")
-            twist.linear.x = 0.05
-            return twist
-            
-        # Careful approach - ALIGN FIRST, then move forward
-        error = (self.basket_cx - self.image_center_x) / float(self.image_center_x)
         
-        # If basket not centered, STOP and ROTATE to align first!
-        if abs(error) > 0.15:  # More than 15% off center
-            rospy.loginfo_throttle(0.5, f"FINAL: ALIGNING - error={error:.2f}, rotating only")
-            twist.linear.x = 0.0  # STOP forward motion
-            twist.angular.z = -error * 0.5  # Rotate to center basket
+        # =====================================================
+        # FINAL APPROACH - use current detection OR last known position
+        # =====================================================
+        
+        if self.basket_detected:
+            # BASKET VISIBLE - align carefully and approach
+            error = (self.basket_cx - self.image_center_x) / float(self.image_center_x)
+            
+            # If basket not centered, STOP and ROTATE to align first!
+            if abs(error) > 0.15:
+                rospy.loginfo_throttle(0.5, f"FINAL: ALIGNING - error={error:.2f}")
+                twist.linear.x = 0.0  # STOP forward motion
+                twist.angular.z = -error * 0.4  # Rotate to center basket
+            else:
+                # Basket centered, move forward slowly
+                twist.linear.x = 0.06  # Very slow approach
+                twist.angular.z = -error * 0.2
+                
+            rospy.loginfo_throttle(0.5, f"FINAL: TRACKING - dist={self.front_dist:.2f}m, error={error:.2f}")
+            
+        elif self._has_valid_last_position():
+            # BASKET LOST but have recent position - continue toward it
+            error = (self.last_known_cx - self.image_center_x) / float(self.image_center_x)
+            age = (rospy.Time.now() - self.last_known_time).to_sec()
+            
+            rospy.loginfo_throttle(0.5, f"FINAL: LOST - using last position (age={age:.1f}s, error={error:.2f})")
+            
+            # Move very slowly toward last known position
+            if abs(error) > 0.2:
+                twist.linear.x = 0.03
+                twist.angular.z = -error * 0.3
+            else:
+                # Go straight slowly - we're close and roughly aligned
+                twist.linear.x = 0.05
+                twist.angular.z = self.last_basket_direction * 0.05
         else:
-            # Basket centered, move forward slowly with minor corrections
-            twist.linear.x = 0.06  # Very slow approach
-            twist.angular.z = -error * 0.25
-        
-        rospy.loginfo_throttle(0.5, f"FINAL: dist={self.front_dist:.2f}m, error={error:.2f}")
+            # Lost and no position memory - just creep forward using LIDAR
+            rospy.loginfo_throttle(0.5, f"FINAL: BLIND - creeping forward, dist={self.front_dist:.2f}m")
+            twist.linear.x = 0.04
+            twist.angular.z = 0.0
         
         return twist
         

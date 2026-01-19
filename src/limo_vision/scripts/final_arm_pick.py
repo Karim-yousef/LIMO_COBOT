@@ -15,6 +15,8 @@ Features:
 import sys
 import rospy
 import moveit_commander
+import actionlib
+from moveit_msgs.msg import MoveGroupAction
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from std_msgs.msg import Bool, Float32MultiArray, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -67,17 +69,15 @@ class DynamicArmPick:
         rospy.loginfo("ARM PICK AND PLACE CONTROLLER")
         rospy.loginfo("="*60)
         
-        try:
-            rospy.wait_for_service('/move_group/get_planning_scene', timeout=30.0)
-            rospy.loginfo("MoveIt ready")
-        except Exception as e:
-            rospy.logwarn(f"Exception: {e}")
-            rospy.logwarn("MoveIt service timeout")
+        # Wait for MoveIt action server with extended timeout and retries
+        rospy.loginfo("Waiting for MoveIt move_group action server...")
+        self._wait_for_moveit(timeout=60.0)
         
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
         
-        self.arm = moveit_commander.MoveGroupCommander("arm")
+        # Initialize arm with retry logic
+        self.arm = self._init_move_group_with_retry("arm", max_retries=5, wait_time=30.0)
         self.arm.set_pose_reference_frame("base_footprint")
         self.arm.set_planning_time(2.0)
         self.arm.set_num_planning_attempts(10)
@@ -85,9 +85,9 @@ class DynamicArmPick:
         self.arm.set_max_acceleration_scaling_factor(0.5)
         
         try:
-            self.gripper = moveit_commander.MoveGroupCommander("gripper")
+            self.gripper = self._init_move_group_with_retry("gripper", max_retries=3, wait_time=15.0)
         except Exception as e:
-            rospy.logwarn(f"Exception: {e}")
+            rospy.logwarn(f"Gripper init exception: {e}")
             self.gripper = None
         
         # TF listener
@@ -133,6 +133,56 @@ class DynamicArmPick:
             rospy.loginfo("Running without Gazebo - using vision-only mode")
         
         rospy.loginfo("Waiting for trigger...")
+    
+    def _wait_for_moveit(self, timeout=60.0):
+        """Wait for MoveIt move_group to be fully ready."""
+        rospy.loginfo(f"Waiting up to {timeout}s for move_group action server...")
+        
+        # First wait for the planning scene service
+        try:
+            rospy.wait_for_service('/move_group/get_planning_scene', timeout=timeout)
+            rospy.loginfo("  ✓ MoveIt planning scene service ready")
+        except rospy.ROSException:
+            rospy.logwarn("  ⚠ MoveIt planning scene service not found, continuing anyway...")
+        
+        # Then wait for the action server (this is what MoveGroupCommander actually needs)
+        client = actionlib.SimpleActionClient('move_group', MoveGroupAction)
+        if client.wait_for_server(rospy.Duration(timeout)):
+            rospy.loginfo("  ✓ MoveIt move_group action server ready")
+        else:
+            rospy.logwarn(f"  ⚠ move_group action server not available after {timeout}s")
+            rospy.logwarn("    Will retry during MoveGroupCommander initialization...")
+    
+    def _init_move_group_with_retry(self, group_name, max_retries=5, wait_time=30.0):
+        """Initialize MoveGroupCommander with retry logic.
+        
+        Args:
+            group_name: Name of the move group (e.g., 'arm', 'gripper')
+            max_retries: Maximum number of retry attempts
+            wait_time: Time to wait for action server in each attempt (seconds)
+            
+        Returns:
+            MoveGroupCommander instance
+            
+        Raises:
+            RuntimeError: If unable to connect after all retries
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                rospy.loginfo(f"Initializing '{group_name}' MoveGroup (attempt {attempt}/{max_retries})...")
+                # MoveGroupCommander has a default 5s timeout, we can increase it via wait param
+                group = moveit_commander.MoveGroupCommander(group_name, wait_for_servers=wait_time)
+                rospy.loginfo(f"  ✓ '{group_name}' MoveGroup initialized successfully")
+                return group
+            except RuntimeError as e:
+                rospy.logwarn(f"  Attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    retry_delay = 5.0 * attempt  # Increasing delay between retries
+                    rospy.loginfo(f"  Waiting {retry_delay}s before retry...")
+                    rospy.sleep(retry_delay)
+                else:
+                    rospy.logerr(f"Failed to initialize '{group_name}' after {max_retries} attempts")
+                    raise RuntimeError(f"Unable to connect to move_group for '{group_name}' after {max_retries} attempts")
     
     def _model_states_cb(self, msg):
         """Extract cube and robot poses from Gazebo (simulation only)."""
@@ -387,40 +437,84 @@ class DynamicArmPick:
         
         This is critical for vertical descent to avoid random RRT paths
         that might push the cube sideways.
+        
+        NEVER falls back to RRT for grasp moves - RRT can cause sideways motion!
         """
         rospy.loginfo(f"  -> {name} (Cartesian): x={target_pose.position.x:.3f} y={target_pose.position.y:.3f} z={target_pose.position.z:.3f}")
         
         # Wait for arm to settle and sync with MoveIt
-        rospy.sleep(0.5)
+        rospy.sleep(0.3)
         
         # Get current pose - this is crucial for Cartesian path computation
         current_pose = self.arm.get_current_pose().pose
         rospy.loginfo(f"  Current pose: x={current_pose.position.x:.3f} y={current_pose.position.y:.3f} z={current_pose.position.z:.3f}")
         
-        # Create waypoint list - start from current pose, go to target
-        # compute_cartesian_path expects waypoints FROM current position
-        waypoints = [target_pose]
+        # CRITICAL: For grasp, we MUST descend purely vertically (same X,Y)
+        # Create intermediate waypoints for better path following
+        waypoints = []
         
-        # Compute Cartesian path with collision avoidance disabled for small descent
-        # eef_step: interpolation resolution (1cm for faster computation)
-        # jump_threshold: 0.0 disables jump checking
+        # If this is a vertical descent (same X,Y, lower Z), use multiple waypoints
+        dx = abs(target_pose.position.x - current_pose.position.x)
+        dy = abs(target_pose.position.y - current_pose.position.y)
+        dz = current_pose.position.z - target_pose.position.z  # Positive if descending
+        
+        if dx < 0.02 and dy < 0.02 and dz > 0.01:
+            # Pure vertical descent - add intermediate waypoint at same X,Y
+            rospy.loginfo(f"  Pure vertical descent detected (dz={dz:.3f}m)")
+            # Keep EXACT same X,Y as current, only change Z
+            mid_pose = Pose()
+            mid_pose.position.x = current_pose.position.x  # Keep current X
+            mid_pose.position.y = current_pose.position.y  # Keep current Y
+            mid_pose.position.z = target_pose.position.z + 0.02  # Slightly above target
+            mid_pose.orientation = target_pose.orientation
+            waypoints.append(mid_pose)
+            
+            # Final pose also at current X,Y (not target X,Y to avoid horizontal motion)
+            final_pose = Pose()
+            final_pose.position.x = current_pose.position.x
+            final_pose.position.y = current_pose.position.y
+            final_pose.position.z = target_pose.position.z
+            final_pose.orientation = target_pose.orientation
+            waypoints.append(final_pose)
+        else:
+            waypoints = [target_pose]
+        
+        # Compute Cartesian path - disable collision for small descent to cube
+        # eef_step: smaller = smoother but slower
         (plan, fraction) = self.arm.compute_cartesian_path(
             waypoints,   # waypoints to follow
-            0.01,        # eef_step: 1cm interpolation (faster)
-            True         # avoid_collisions ENABLED for safety
+            0.005,       # eef_step: 5mm interpolation (smoother)
+            False        # avoid_collisions DISABLED for grasp descent
         )
         
         rospy.loginfo(f"  Cartesian path fraction: {fraction:.2f}")
         
-        if fraction >= 0.90:  # Need at least 90% of path
+        if fraction >= 0.85:  # Accept 85% completion
             self.arm.execute(plan, wait=True)
             self.arm.stop()
-            rospy.sleep(0.3)
+            rospy.sleep(0.2)
             return True
         else:
-            rospy.logwarn(f"  Cartesian path only {fraction*100:.0f}% complete, falling back to RRT")
-            # Fall back to regular planning
-            return self._move(target_pose, name + " (RRT fallback)")
+            # DO NOT fall back to RRT for grasp moves!
+            # RRT produces erratic paths that push the cube away
+            rospy.logwarn(f"  Cartesian path only {fraction*100:.0f}% - will try with collision disabled")
+            
+            # Try again with collision checking fully disabled
+            (plan2, fraction2) = self.arm.compute_cartesian_path(
+                waypoints,
+                0.005,
+                False  # Collision disabled
+            )
+            
+            if fraction2 >= 0.70:
+                rospy.loginfo(f"  Retry succeeded: {fraction2*100:.0f}%")
+                self.arm.execute(plan2, wait=True)
+                self.arm.stop()
+                rospy.sleep(0.2)
+                return True
+            else:
+                rospy.logerr(f"  Cartesian path failed completely ({fraction2*100:.0f}%), aborting to avoid pushing cube")
+                return False
 
     def _home(self):
         """Move arm to home position."""
