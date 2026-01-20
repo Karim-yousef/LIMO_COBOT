@@ -391,6 +391,9 @@ This project is developed for educational purposes as part of the **AER657 Cogni
 ## 👨‍💻 Authors
 
 - **Karim** - Project development and implementation
+- **Mohamed Salman**
+- **Hossam Basha**
+- **Hassan Mohamed**
 
 ---
 
